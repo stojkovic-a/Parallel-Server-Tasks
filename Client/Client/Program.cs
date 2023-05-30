@@ -18,7 +18,7 @@ namespace Client;
 class Client
 {
     private static HttpClient[] client;
-    private static string[] gifs=new string[6];
+    private static string[] gifs=new string[7];
   
     public static async Task Main(string[] args)
     {
@@ -28,7 +28,7 @@ class Client
         gifs[3] = "pug";
         gifs[4] = "scarydog";
         gifs[5] = "donaldduck";
-
+        gifs[6] = "NofFound";
         int n = 1000;
         client = new HttpClient[n];
 
@@ -37,7 +37,7 @@ class Client
         var pocetak=Stopwatch.GetTimestamp();
         for (int i = 0; i < n; i++)
         {
-            int pom = rnd.Next(6);
+            int pom = rnd.Next(7);
             client[i] = new HttpClient();
             client[i].BaseAddress = new Uri("http://localhost:5050/");
             client[i].DefaultRequestHeaders

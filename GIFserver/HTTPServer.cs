@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
@@ -19,11 +20,13 @@ namespace GIFserver
         private HttpListener listener;
         private string address;
         private Cache cache;
+        private Index index;
 
         volatile private int numOfRequests;
         volatile private int numBadRequests;
         volatile private int numNotFoundReq;
         volatile private int numFoundInCache;
+        volatile private int numFoundByIndex;
         volatile private int numFoundInDirectory;
 
         private string loggFileName = "Loggs.txt";
@@ -36,42 +39,36 @@ namespace GIFserver
             this.listener = new HttpListener();
             this.listener.Prefixes.Add("http://" + address + ":" + this.Port.ToString() + "/");
             this.cache = new Cache(5);
+            this.index = new Index(100);
 
             numOfRequests = 0;
             numBadRequests = 0;
             numNotFoundReq = 0;
             numFoundInCache = 0;
+            numFoundByIndex = 0;
             numFoundInDirectory = 0;
         }
 
 
-        public void Start(object? sender, DoWorkEventArgs e)
+        public  void Start(System.Threading.CancellationToken token)
         {
-            BackgroundWorker bw = (BackgroundWorker)e.Argument;
             this.listener.Start();
             while (true)
             {
                 HttpListenerContext context = listener.GetContext();
                 Interlocked.Increment(ref numOfRequests);
-                ThreadPool.QueueUserWorkItem(HandleRequest, context);
+                //ThreadPool.QueueUserWorkItem(HandleRequest, context);
+                Task t1 = HandleRequest(context);
 
-                if (bw.CancellationPending)
+                if (token.IsCancellationRequested)
                 {
-                    e.Cancel = true;
                     break;
                 }
             }
             Console.WriteLine("Server not listening anymore");
-        }
-        public void Stop(object? sender, RunWorkerCompletedEventArgs e)
-        {
-            if (e.Cancelled)
-            {
-                Console.WriteLine("Server Stopped");
-            }
             Report();
         }
-        private void HandleRequest(object? objContext)
+        private async Task HandleRequest(object? objContext)
         {
             HttpListenerContext context=(HttpListenerContext)objContext;
             Verify(context);
@@ -121,7 +118,8 @@ namespace GIFserver
             }
             else
             {
-                ThreadPool.QueueUserWorkItem(Loggs,new object[] {false,false,false,context.Request});
+                //ThreadPool.QueueUserWorkItem(Loggs,new object[] {false,false,false,context.Request});
+                Task t1=Loggs(new object[] {false,false,false,false,context.Request});
                 Response(400,context);
                 Interlocked.Increment(ref numBadRequests);
             }
@@ -130,33 +128,54 @@ namespace GIFserver
         }
 
 
-        private void LookForGif(string gifName,HttpListenerContext context)
+        private void LookForGif(string gifName, HttpListenerContext context)
         {
             byte[] gif = new byte[0];
             if (cache.Find(gifName, ref gif))
             {
                 Interlocked.Increment(ref this.numFoundInCache);
-                ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, true, true, context.Request });
-                Response(200, context,gif.Length,gif);
+                //ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, true, true, context.Request });
+                Task t1 = Loggs(new object[] { true, true, true,false, context.Request });
+                Response(200, context, gif.Length, gif);
                 return;
             }
 
 
+            string? filePath=LookIndex(gifName);
+            if (filePath != null)
+            {
+                Interlocked.Increment(ref this.numFoundByIndex);
+                Interlocked.Increment(ref this.numFoundInDirectory);
+                gif = File.ReadAllBytes(filePath);
+                Task t2 = Loggs(new object[] { true, true, false,false, context.Request });
+                Task t3 = Task.Run(() => cache.Add(new object[] { gifName, gif }));
+                Response(200, context, gif.Length, gif);
+                return;
+            }
 
-            string? filePath=LookDirectory(gifName,this.serverRoot);
+
+            filePath = LookDirectory(gifName, this.serverRoot);
 
             if (filePath == null)
             {
                 Interlocked.Increment(ref this.numNotFoundReq);
-                ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, false, false, context.Request });
+                //ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, false, false, context.Request });
+                Task t4 = Loggs(new object[] { true, false, false,false, context.Request });
                 Response(404, context);
                 return;
             }
             Interlocked.Increment(ref this.numFoundInDirectory);
             gif = File.ReadAllBytes(filePath);
-            ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, true, false, context.Request });
-            ThreadPool.QueueUserWorkItem(cache.Add,new object[] {gifName,gif});
+            //ThreadPool.QueueUserWorkItem(Loggs, new object[] { true, true, false, context.Request });
+            Task t5 = Loggs(new object[] { true, true, false,false, context.Request });
+            //ThreadPool.QueueUserWorkItem(cache.Add,new object[] {gifName,gif});
+            Task t6 = Task.Run(() => cache.Add(new object[] { gifName, gif }));
+            Task t7= Task.Run(()=> index.Add(gifName,filePath));
             Response(200, context, gif.Length, gif);
+        }
+        private string? LookIndex(string gifName)
+        {
+           return this.index.Find(gifName);
         }
         private string? LookDirectory(string gifName,string rootDir)
         {
@@ -181,14 +200,15 @@ namespace GIFserver
 
         }
 
-        private void Loggs(object? instance)
+        private async Task Loggs(object? instance)
         {
             string text = String.Empty;
             object[] objects=instance as object[];
             bool valid = (bool)objects[0];
             bool found = (bool)objects[1];
             bool inCache = (bool)objects[2];
-            HttpListenerRequest request = (HttpListenerRequest)objects[3];
+            bool inIndex = (bool)objects[3];
+            HttpListenerRequest request = (HttpListenerRequest)objects[4];
             if(!valid)
             {
                 text = @"--Invalid request received at " + DateTime.Now.ToString() + "\n";
@@ -197,9 +217,13 @@ namespace GIFserver
             {
                 text=@"--Valid request but gif not found at " + DateTime.Now.ToString() + "\n";
             }else
-            if(valid&&found&&!inCache)
+            if(valid&&found&&!inCache&&!inIndex)
             {
                 text=@"--Valid request gif found in directory at " + DateTime.Now.ToString() + "\n";
+            }else
+            if (valid&&found&&!inCache&&inIndex)
+            {
+                text=@"--Valid request gif found with index at "+DateTime.Now.ToString()+"\n";
             }else
             if(valid&&found&&inCache)
             {
@@ -306,12 +330,14 @@ namespace GIFserver
            
         }
       
-        private void Report()
+        public void Report()
         {
             Console.WriteLine($"{this.numOfRequests} requests were received");
             Console.WriteLine($"{this.numBadRequests} were bad requests");
             Console.WriteLine($"{this.numNotFoundReq} were not found");
             Console.WriteLine($"Of {this.numOfRequests - this.numBadRequests - this.numNotFoundReq} found requests, {this.numFoundInCache} were found in cache and {this.numFoundInDirectory} were found in directorty");
+            Console.WriteLine(@$"Of {this.numOfRequests - this.numBadRequests - this.numNotFoundReq} found requests, {this.numFoundByIndex} were found using index structure and {this.numOfRequests - this.numBadRequests - this.numNotFoundReq - this.numFoundByIndex-this.numFoundInCache}
+had to be searched for");
         }
 
 

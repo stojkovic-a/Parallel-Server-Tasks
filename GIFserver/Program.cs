@@ -6,46 +6,40 @@ namespace GIFserver;
 
 class Program
 {
-    static BackgroundWorker bw;
-
     public static void Main(string[] args)
     {
-
-        int numberOfProcessors=Environment.ProcessorCount;
-        ThreadPool.SetMinThreads(numberOfProcessors, 10*numberOfProcessors);
-        ThreadPool.SetMaxThreads(10 * numberOfProcessors, 100 * numberOfProcessors);
         
         Thread.CurrentThread.IsBackground = false;
-
-        bw = new BackgroundWorker()
-        {
-            WorkerSupportsCancellation = true,
-            WorkerReportsProgress = false,
-        };
+        var cts = new CancellationTokenSource();
+        CancellationToken token= cts.Token;
+     
         
         HTTPServers server = new HTTPServers("localhost", 5050);
-        bw.DoWork += server.Start;
-        bw.RunWorkerCompleted += server.Stop;
-        bw.RunWorkerAsync(argument: bw);
-        TakeCommands();
+        Task serverRun =  Task.Run(()=>server.Start(token));
+        TakeCommands(cts,server);
     }
 
-    static void TakeCommands()
+    static void TakeCommands(CancellationTokenSource cts,HTTPServers s)
     {
 
         string command;
         do
         {
             command = Console.ReadLine();
-            if (command != "quit")
+            if (command == "quit")
             {
-                Console.WriteLine("Invalid Command");
+                cts.Cancel();
+            }
+            else if(command=="report")
+            {
+                s.Report();
             }
             else
             {
-                bw.CancelAsync();
+                Console.WriteLine("Unknown command");
             }
         } while (command != "quit");
         Console.ReadLine();
+        Console.WriteLine("Server stopped");
     }
 }
